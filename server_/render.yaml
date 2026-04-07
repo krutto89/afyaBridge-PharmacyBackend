@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: afya-bridge-backend
+    env: python
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application"

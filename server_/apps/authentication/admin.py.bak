@@ -1,0 +1,87 @@
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from .models import PharmacyUser, PharmacyRegistration, OTPVerification
+
+@admin.register(PharmacyUser)
+class PharmacyUserAdmin(UserAdmin):
+    ordering = ['email']
+    list_display = ['email', 'full_name', 'role', 'is_verified', 'is_active', 'created_at']
+    list_filter = ['role', 'is_verified', 'is_active']
+    search_fields = ['email', 'full_name', 'phone']
+    readonly_fields = ['created_at', 'updated_at', 'last_login']
+
+    fieldsets = (
+        ('Login Credentials', {
+            'fields': ('email', 'password')
+        }),
+        ('Personal Info', {
+            'fields': ('full_name', 'phone', 'photo')
+        }),
+        ('Role & Pharmacy', {
+            'fields': ('role', 'is_verified', 'pharmacy')
+        }),
+        ('Permissions', {
+            'fields': ('is_active', 'is_staff', 'is_superuser'),
+        }),
+        ('Timestamps', {
+            'fields': ('last_login', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    add_fieldsets = (
+        (None, {
+            'classes': ('wide',),
+            'fields': ('email', 'full_name', 'role', 'pharmacy', 'password1', 'password2'),
+        }),
+    )
+
+@admin.register(PharmacyRegistration)
+class PharmacyRegistrationAdmin(admin.ModelAdmin):
+    list_display = ['pharmacy_name_legal', 'business_email', 'status',
+                    'current_step', 'phone_verified', 'submitted_at']
+    list_filter = ['status', 'phone_verified', 'email_verified']
+    search_fields = ['pharmacy_name_legal', 'business_email', 'ppb_license_no', 'kra_pin']
+    readonly_fields = ['created_at', 'updated_at', 'submitted_at']
+
+    fieldsets = (
+        ('Step 1: Business Info', {
+            'fields': ('pharmacy_name_legal', 'trading_name', 'business_reg_no',
+                       'kra_pin', 'ppb_license_no', 'license_expiry')
+        }),
+        ('Location', {
+            'fields': ('county', 'sub_county', 'physical_address', 'gps_lat', 'gps_lng')
+        }),
+        ('Contact & Verification', {
+            'fields': ('business_phone', 'business_email', 'phone_verified', 'email_verified')
+        }),
+        ('Step 2: Superintendent', {
+            'fields': ('pharmacist_name', 'id_or_passport_no', 'pharmacist_reg_no',
+                       'practicing_license', 'practicing_expiry',
+                       'pharmacist_phone', 'pharmacist_email',
+                       'id_document', 'practicing_license_doc'),
+            'classes': ('collapse',)
+        }),
+        ('Step 3: Compliance Documents', {
+            'fields': ('operating_license_doc', 'business_reg_cert',
+                       'kra_pin_cert', 'proof_of_address_doc'),
+            'classes': ('collapse',)
+        }),
+        ('Step 4: Financial Setup', {
+            'fields': ('mpesa_method', 'short_code_name', 'short_code_number',
+                       'settlement_bank', 'settlement_frequency'),
+            'classes': ('collapse',)
+        }),
+        ('Review & Status', {
+            'fields': ('status', 'current_step', 'review_notes', 'reviewed_by',
+                       'submitted_at', 'created_at', 'updated_at')
+        }),
+    )
+
+
+@admin.register(OTPVerification)
+class OTPVerificationAdmin(admin.ModelAdmin):
+    list_display = ['phone', 'otp_code', 'is_used', 'expires_at', 'created_at']
+    list_filter = ['is_used']
+    search_fields = ['phone']
+    readonly_fields = ['created_at']
