@@ -3,8 +3,12 @@ from decouple import config
 from pathlib import Path
 import os
 
-# Use PyMySQL as MySQLdb drop-in replacement
+# ====================== PyMySQL SETUP (Critical for Render + Django 6.0) ======================
 pymysql.install_as_MySQLdb()
+
+# This tricks Django into thinking we have a newer mysqlclient version
+# Django 6.0 now requires mysqlclient >= 2.2.1
+pymysql.version_info = (2, 2, 1, 'final', 0)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -86,21 +90,21 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': config('DB_NAME'),
-        'USER': config('DB_USER'),          # Should be like 3uQfsY5cKuXxfTC.root
+        'USER': config('DB_USER'),           # e.g. 3uQfsY5cKuXxfTC.root
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT', '4000'),
         'OPTIONS': {
             'charset': 'utf8mb4',
             'ssl': {
-                # Option 1: If you added certs/cacert.pem to your repo
-                'ca': os.path.join(BASE_DIR, 'certs', 'cacert.pem'),
-                'check_hostname': False,     # Often needed with TiDB Cloud
+                # Try this first (no custom cert file needed)
+                'ssl_mode': 'REQUIRED',
+                # If it still fails, switch to file-based (see note below)
+                # 'ca': os.path.join(BASE_DIR, 'certs', 'cacert.pem'),
+                # 'check_hostname': False,
             }
-            # Alternative (try this first if cert file is problematic):
-            # 'ssl': {'ssl_mode': 'REQUIRED'}
         },
-        'CONN_MAX_AGE': 300,   # Helps with Render cold starts
+        'CONN_MAX_AGE': 300,
     }
 }
 
