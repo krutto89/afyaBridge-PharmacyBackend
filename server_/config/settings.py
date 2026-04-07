@@ -90,24 +90,17 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': config('DB_NAME'),
-        'USER': config('DB_USER'),           # e.g. 3uQfsY5cKuXxfTC.root
+        'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT', '4000'),
         'OPTIONS': {
             'charset': 'utf8mb4',
-            'ssl': {
-                # Try this first (no custom cert file needed)
-                'ssl_mode': 'REQUIRED',
-                # If it still fails, switch to file-based (see note below)
-                # 'ca': os.path.join(BASE_DIR, 'certs', 'cacert.pem'),
-                # 'check_hostname': False,
-            }
+            'ssl': {'ssl_mode': 'REQUIRED'}
         },
         'CONN_MAX_AGE': 300,
     }
 }
-
 # ====================== REST FRAMEWORK ======================
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
