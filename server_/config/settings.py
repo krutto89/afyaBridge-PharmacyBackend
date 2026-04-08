@@ -86,6 +86,7 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 
 # ====================== DATABASE (TiDB Cloud) ======================
+# ====================== DATABASE (TiDB Cloud Serverless) ======================
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -93,17 +94,38 @@ DATABASES = {
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT', '4000'),
+        'PORT': config('DB_PORT', cast=int, default=4000),
         'OPTIONS': {
             'charset': 'utf8mb4',
-            # Required for TiDB Cloud Serverless + PyMySQL on Windows
-            'ssl': {
-                'ca': str(BASE_DIR / config('TIDB_CA_PATH')),
-            },
         },
         'CONN_MAX_AGE': 300,
     }
 }
+
+# ====================== SSL Configuration for TiDB (Production vs Local) ======================
+# TiDB Serverless requires SSL, but we make it flexible for different environments
+
+tidb_ca_path = config('TIDB_CA_PATH', default=None)
+
+if tidb_ca_path:
+    ca_full_path = BASE_DIR / tidb_ca_path
+    if ca_full_path.exists():
+        # Use custom CA file if it exists (works locally)
+        DATABASES['default']['OPTIONS']['ssl'] = {
+            'ca': str(ca_full_path),
+            'ssl_mode': 'VERIFY_IDENTITY',
+        }
+    else:
+        # Fallback for Render / environments where CA file is not present
+        DATABASES['default']['OPTIONS']['ssl'] = {
+            'ssl_mode': 'PREFERRED',      # Most reliable for Render + TiDB
+        }
+else:
+    # No TIDB_CA_PATH provided → use preferred mode
+    DATABASES['default']['OPTIONS']['ssl'] = {
+        'ssl_mode': 'PREFERRED',
+    }
+
 # ====================== REST FRAMEWORK ======================
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
