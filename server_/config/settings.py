@@ -96,7 +96,10 @@ DATABASES = {
         'PORT': config('DB_PORT', '4000'),
         'OPTIONS': {
             'charset': 'utf8mb4',
-            'ssl': {'ssl_mode': 'REQUIRED'}
+            # Required for TiDB Cloud Serverless + PyMySQL on Windows
+            'ssl': {
+                'ca': str(BASE_DIR / config('TIDB_CA_PATH')),
+            },
         },
         'CONN_MAX_AGE': 300,
     }

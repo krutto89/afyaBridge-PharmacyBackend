@@ -10,6 +10,7 @@ import random
 import string
 import requests
 import os
+import traceback
 
 from django.contrib.auth.hashers import make_password
 
@@ -20,14 +21,16 @@ import utils.responses as resp
 
 def _link_user_to_pharmacy(user, pharmacy):
     """
-    Safely link a user to a pharmacy using a targeted SQL UPDATE.
-    This avoids foreign key constraint errors that occur with direct field assignment + save().
+    Safely link a user to a pharmacy via targeted SQL UPDATE.
+    Avoids FK constraint errors from direct assignment + full model save.
     """
     PharmacyUser.objects.filter(id=user.id).update(pharmacy_id=pharmacy.id)
     user.refresh_from_db()
 
 
-# ========================== AUTH VIEWS ==========================
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
 
 class RegisterUserView(APIView):
     permission_classes = [AllowAny]
@@ -42,9 +45,9 @@ class RegisterUserView(APIView):
                 phone_number = data.get('phone_number'),
                 password     = make_password(data['password']),
             )
-            return resp.created({"id": str(user.id), "email": user.email}, "User registered successfully")
+            return resp.created({'id': str(user.id), 'email': user.email}, 'User registered successfully')
         except Exception as e:
-            return resp.error("Registration failed", str(e))
+            return resp.error('Registration failed', str(e))
 
 
 class LoginView(APIView):
@@ -79,6 +82,10 @@ class LogoutView(APIView):
             return resp.error('Invalid or expired token')
 
 
+# =============================================================================
+# PROFILE
+# =============================================================================
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -88,7 +95,9 @@ class ProfileView(APIView):
 
     def put(self, request):
         from .serializers import UserProfileSerializer
-        serializer = UserProfileSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        serializer = UserProfileSerializer(
+            request.user, data=request.data, partial=True, context={'request': request}
+        )
         if serializer.is_valid():
             serializer.save()
             return resp.success(serializer.data, 'Profile updated')
@@ -104,13 +113,16 @@ class ProfilePhotoView(APIView):
             return resp.error('No photo provided')
         if photo.size > 800 * 1024:
             return resp.error('Photo must be under 800KB')
-        request.user.photo = photo
+        request.user.profile_image = str(photo)
         request.user.save()
         from .serializers import UserProfileSerializer
-        return resp.success(UserProfileSerializer(request.user, context={'request': request}).data, 'Photo updated')
+        return resp.success(
+            UserProfileSerializer(request.user, context={'request': request}).data,
+            'Photo updated'
+        )
 
     def delete(self, request):
-        request.user.photo = None
+        request.user.profile_image = None
         request.user.save()
         return resp.success(message='Photo removed')
 
@@ -128,10 +140,99 @@ class ChangePasswordView(APIView):
             return resp.error('Current password is incorrect')
         user.set_password(serializer.validated_data['new_password'])
         user.save()
-        return resp.success(message='Password changed')
+        return resp.success(message='Password changed successfully')
 
 
-# ========================== REGISTRATION STEP VIEWS ==========================
+# =============================================================================
+# SINGLE-STEP COMPLETE REGISTRATION
+# POST /api/auth/register/complete/
+# Accepts all fields in one multipart/form-data request.
+# =============================================================================
+
+class CompletePharmacyRegistrationView(APIView):
+    authentication_classes = []
+    permission_classes     = [AllowAny]
+    parser_classes         = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from .serializers import CompleteRegistrationSerializer, UserProfileSerializer
+
+        # Validate password early before running serializer
+        password = request.data.get('password', '').strip()
+        if not password or len(password) < 8:
+            return resp.error('Password is required and must be at least 8 characters')
+
+        serializer = CompleteRegistrationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return resp.error('Registration validation failed', serializer.errors)
+
+        try:
+            # 1. Save registration record (password stripped inside serializer.create)
+            registration = serializer.save()
+
+            # 2. Create or fetch Pharmacy
+            pharmacy, _ = Pharmacy.objects.get_or_create(
+                name=registration.pharmacy_name_legal,
+                defaults={
+                    'email':          registration.business_email,
+                    'phone':          registration.business_phone or '',
+                    'address_line1':  registration.physical_address or '',
+                    'address_line2':  '',  
+                    'county':         registration.county or '',
+                    'sub_county':     registration.sub_county or '',
+                    'gps_lat':        registration.gps_lat,
+                    'gps_lng':        registration.gps_lng,
+                    'license_number': registration.ppb_license_no or '',
+                    'license_expiry': registration.license_expiry,
+                }
+            )
+
+            # 3. Create or fetch PharmacyUser
+            user, created = PharmacyUser.objects.get_or_create(
+                email=registration.business_email,
+                defaults={
+                    'full_name':    registration.pharmacist_name or registration.pharmacy_name_legal,
+                    'role':         'pharmacist',
+                    'phone_number': registration.pharmacist_phone or registration.business_phone or None,
+                }
+            )
+
+            # Update name/phone on existing user
+            if not created:
+                if registration.pharmacist_name:
+                    user.full_name = registration.pharmacist_name
+                user.save()
+
+            # 4. Link user → pharmacy (targeted UPDATE to avoid FK constraint errors)
+            _link_user_to_pharmacy(user, pharmacy)
+
+            # 5. Set password
+            user.set_password(password)
+            user.save()
+
+            # 6. Mark registration approved
+            PharmacyRegistration.objects.filter(id=registration.id).update(status='approved')
+
+            # 7. Issue JWT tokens — user is logged in immediately
+            refresh = RefreshToken.for_user(user)
+
+            return resp.success({
+                'registration_id': str(registration.id),
+                'pharmacy_id':     str(pharmacy.id),
+                'status':          'approved',
+                'access_token':    str(refresh.access_token),
+                'refresh_token':   str(refresh),
+                'user':            UserProfileSerializer(user, context={'request': request}).data,
+            }, 'Registration successful')
+
+        except Exception as e:
+            traceback.print_exc()   # prints full error to Django terminal
+            return resp.error('Registration failed', str(e))
+
+
+# =============================================================================
+# MULTI-STEP REGISTRATION (kept for backward compatibility)
+# =============================================================================
 
 class RegistrationStep1View(APIView):
     authentication_classes = []
@@ -165,7 +266,11 @@ class RegistrationStep2View(APIView):
         if not serializer.is_valid():
             return resp.error('Step 2 validation failed', serializer.errors)
         serializer.save(current_step=2)
-        return resp.success({'registration_id': str(reg.id), 'current_step': 2, 'next_step': 3}, 'Step 2 saved successfully')
+        return resp.success({
+            'registration_id': str(reg.id),
+            'current_step':    2,
+            'next_step':       3,
+        }, 'Step 2 saved')
 
 
 class RegistrationStep3View(APIView):
@@ -183,7 +288,7 @@ class RegistrationStep3View(APIView):
         if not serializer.is_valid():
             return resp.error('Step 3 validation failed', serializer.errors)
         serializer.save(current_step=3)
-        return resp.success({'current_step': 3, 'next_step': 4}, 'Documents uploaded')
+        return resp.success({'current_step': 3, 'next_step': 4}, 'Documents saved')
 
 
 class RegistrationStep4View(APIView):
@@ -201,18 +306,11 @@ class RegistrationStep4View(APIView):
         if not serializer.is_valid():
             return resp.error('Step 4 validation failed', serializer.errors)
 
-        reg = serializer.save(current_step=4)
-
-        # Phase 2: final submission (password provided)
-        password = serializer.validated_data.get('password')
+        serializer.save(current_step=4)
+        password = request.data.get('password', '').strip()
 
         if password:
             try:
-                reg.current_step = 5
-                reg.status = 'APPROVED'
-                reg.submitted_at = timezone.now()
-                reg.save()
-
                 pharmacy, _ = Pharmacy.objects.get_or_create(
                     name=reg.pharmacy_name_legal,
                     defaults={
@@ -227,7 +325,6 @@ class RegistrationStep4View(APIView):
                         'license_expiry': reg.license_expiry,
                     },
                 )
-
                 user, _ = PharmacyUser.objects.get_or_create(
                     email=reg.business_email,
                     defaults={
@@ -235,31 +332,28 @@ class RegistrationStep4View(APIView):
                         'role':      'pharmacist',
                     }
                 )
-
-                # Link pharmacy safely
                 _link_user_to_pharmacy(user, pharmacy)
-
                 user.set_password(password)
                 user.save()
-
+                PharmacyRegistration.objects.filter(id=reg.id).update(
+                    status='approved', submitted_at=timezone.now(), current_step=5
+                )
                 refresh = RefreshToken.for_user(user)
                 return resp.success({
                     'registration_id': str(reg.id),
-                    'status':          'APPROVED',
+                    'status':          'approved',
                     'access_token':    str(refresh.access_token),
                     'refresh_token':   str(refresh),
                     'user':            UserProfileSerializer(user, context={'request': request}).data,
                 }, 'Registration completed successfully')
-
             except Exception as e:
-                return resp.error("Failed to complete registration", str(e))
+                traceback.print_exc()
+                return resp.error('Failed to complete registration', str(e))
 
-        # If no password yet, just save step 4
         return resp.success({
             'registration_id': str(reg.id),
             'current_step':    4,
-            'message':         'Step 4 saved',
-        }, 'Step 4 saved successfully')
+        }, 'Step 4 saved. Submit password to complete.')
 
 
 class RegistrationStatusView(APIView):
@@ -279,7 +373,9 @@ class RegistrationStatusView(APIView):
         })
 
 
-# ========================== OTP & PASSWORD VIEWS ==========================
+# =============================================================================
+# OTP
+# =============================================================================
 
 class SendOTPView(APIView):
     authentication_classes = []
@@ -289,14 +385,12 @@ class SendOTPView(APIView):
         email = request.data.get('email', '').strip().lower()
         if not email:
             return resp.error('Email is required')
-
         admin_auth_url = os.environ.get('ADMIN_AUTH_URL', '').rstrip('/')
         if not admin_auth_url:
             return resp.error('ADMIN_AUTH_URL is not configured')
-
         try:
             response = requests.post(
-                url     = f"{admin_auth_url}/api/admin/auth/send-otp",
+                url     = f'{admin_auth_url}/api/admin/auth/send-otp',
                 json    = {'email': email},
                 headers = {'Content-Type': 'application/json'},
                 timeout = 10,
@@ -321,7 +415,10 @@ class VerifyOTPView(APIView):
         phone    = serializer.validated_data['phone']
         otp_code = serializer.validated_data['otp_code']
         try:
-            otp = OTPVerification.objects.get(phone=phone, otp_code=otp_code, is_used=False, expires_at__gt=timezone.now())
+            otp = OTPVerification.objects.get(
+                phone=phone, otp_code=otp_code,
+                is_used=False, expires_at__gt=timezone.now()
+            )
             otp.is_used = True
             otp.save()
             PharmacyRegistration.objects.filter(business_phone=phone).update(phone_verified=True)
@@ -329,6 +426,10 @@ class VerifyOTPView(APIView):
         except OTPVerification.DoesNotExist:
             return resp.error('Invalid or expired OTP')
 
+
+# =============================================================================
+# PASSWORD RESET
+# =============================================================================
 
 class ForgotPasswordView(APIView):
     authentication_classes = []
@@ -341,12 +442,12 @@ class ForgotPasswordView(APIView):
         try:
             user = PharmacyUser.objects.get(email=email)
         except PharmacyUser.DoesNotExist:
-            return resp.success({'message': 'If an account exists, you will receive a reset link.'}, 'Email sent')
+            return resp.success({'message': 'If an account exists, you will receive a reset link.'})
 
         token   = ''.join(random.choices(string.ascii_letters + string.digits, k=64))
         expires = timezone.now() + timedelta(hours=1)
         PasswordReset.objects.create(user=user, token=token, expires_at=expires)
-        reset_url = f"http://localhost:5173/auth/reset-password?token={token}"
+        reset_url = f"{os.environ.get('FRONTEND_URL', 'http://localhost:5173')}/auth/reset-password?token={token}"
         return resp.success({
             'message':   'If an account exists, you will receive a reset link.',
             'reset_url': reset_url,
@@ -359,8 +460,8 @@ class ResetPasswordView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        token    = request.data.get('token', '')
-        password = request.data.get('password', '')
+        token    = request.data.get('token', '').strip()
+        password = request.data.get('password', '').strip()
         if not token or not password:
             return resp.error('Token and password are required')
         if len(password) < 8:
@@ -376,80 +477,4 @@ class ResetPasswordView(APIView):
         user.save()
         reset.is_used = True
         reset.save()
-        return resp.success({'message': 'Password has been reset successfully.'}, 'Password reset successful')
-
-
-# ========================== COMPLETE REGISTRATION (single-step) ==========================
-
-class CompletePharmacyRegistrationView(APIView):
-    authentication_classes = []
-    permission_classes = [AllowAny]
-    parser_classes = [MultiPartParser, FormParser]
-
-    def post(self, request):
-        from .serializers import FullPharmacyRegistrationSerializer, UserProfileSerializer
-
-        serializer = FullPharmacyRegistrationSerializer(data=request.data)
-        if not serializer.is_valid():
-            return resp.error('Registration validation failed', serializer.errors)
-
-        registration = serializer.save()
-        password     = request.data.get('password')
-
-        if password:
-            try:
-                pharmacy, _ = Pharmacy.objects.get_or_create(
-                    name=registration.pharmacy_name_legal,
-                    defaults={
-                        'email':          registration.business_email,
-                        'phone':          getattr(registration, 'business_phone', '') or '',
-                        'address_line1':  getattr(registration, 'physical_address', '') or '',
-                        'county':         getattr(registration, 'county', '') or '',
-                        'sub_county':     getattr(registration, 'sub_county', '') or '',
-                        'gps_lat':        getattr(registration, 'gps_lat', None),
-                        'gps_lng':        getattr(registration, 'gps_lng', None),
-                        'license_number': getattr(registration, 'ppb_license_no', '') or '',
-                        'license_expiry': getattr(registration, 'license_expiry', None),
-                    }
-                )
-
-                user, _ = PharmacyUser.objects.get_or_create(
-                    email=registration.business_email,
-                    defaults={
-                        'full_name': getattr(registration, 'pharmacist_name', '') or registration.pharmacy_name_legal,
-                        'role':      'pharmacist',
-                    }
-                )
-
-                # Update name/phone if changed
-                if getattr(registration, 'pharmacist_name', None):
-                    user.full_name = registration.pharmacist_name
-                if getattr(registration, 'business_phone', None):
-                    user.phone_number = registration.business_phone
-                user.save()
-
-                # Link pharmacy safely
-                _link_user_to_pharmacy(user, pharmacy)
-
-                user.set_password(password)
-                user.save()
-
-                refresh = RefreshToken.for_user(user)
-                return resp.success({
-                    'registration_id': str(registration.id),
-                    'status':          'APPROVED',
-                    'message':         'Registration completed successfully!',
-                    'access_token':    str(refresh.access_token),
-                    'refresh_token':   str(refresh),
-                    'user':            UserProfileSerializer(user, context={'request': request}).data,
-                }, 'Registration successful')
-
-            except Exception as e:
-                return resp.error("Failed to complete registration", str(e))
-
-        return resp.success({
-            'registration_id': str(registration.id),
-            'current_step':    registration.current_step,
-            'status':          registration.status,
-            'message':         'Registration data saved successfully',
-        }, 'Registration saved')
+        return resp.success(message='Password reset successfully. You can now log in.')
