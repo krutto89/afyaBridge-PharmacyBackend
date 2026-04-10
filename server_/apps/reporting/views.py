@@ -2,10 +2,13 @@ from rest_framework.views import APIView
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum, F
+
+# Correct imports - Order comes from orders app
 from apps.orders.models import Order
 from apps.inventory.models import Drug, StockBatch
 from apps.prescriptions.models import Prescription
 from apps.deliveries.models import Delivery
+
 from utils.permissions import IsPharmacist
 import utils.responses as resp
 
@@ -28,7 +31,7 @@ class DashboardView(APIView):
 
         if not pharmacy:
             return resp.success({
-                'pending_prescriptions': 0,
+                'pending_orders': 0,
                 'low_stock_alerts': 0,
                 'critical_stock_alerts': 0,
                 'ready_for_pickup': 0,
@@ -50,8 +53,11 @@ class DashboardView(APIView):
         ).aggregate(total=Sum('total_amount'))['total'] or 0
 
         data = {
-            'pending_prescriptions': Prescription.objects.filter(
-                pharmacy_id=pharmacy.id, status='pending').count(),
+            'pending_orders': Order.objects.filter(
+                pharmacy_id=pharmacy.id, 
+                status='pending'
+            ).count(),
+
             'low_stock_alerts': drugs.filter(
                 quantity_in_stock__lte=F('reorder_level')).count(),
             'critical_stock_alerts': drugs.filter(
