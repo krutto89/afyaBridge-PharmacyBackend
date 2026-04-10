@@ -14,14 +14,13 @@ def _pharmacy_order_ids(pharmacy):
     """Return a queryset of order UUIDs belonging to a pharmacy."""
     if not pharmacy:
         return Order.objects.none().values_list('id', flat=True)
-    return Order.objects.filter(pharmacy=pharmacy).values_list('id', flat=True)
+    return Order.objects.filter(pharmacy_id=pharmacy.id).values_list('id', flat=True)
 
 
 class DashboardView(APIView):
     permission_classes = [IsPharmacist]
 
     def get(self, request):
-        # Safe access - many custom IsPharmacist classes assume .pharmacy exists
         try:
             pharmacy = getattr(request.user, 'pharmacy', None)
         except Exception:
@@ -41,32 +40,31 @@ class DashboardView(APIView):
         today = timezone.now().date()
         cutoff = today + timedelta(days=30)
 
-        drugs = Drug.objects.filter(pharmacy=pharmacy, is_active=True)
+        drugs = Drug.objects.filter(pharmacy_id=pharmacy.id, is_active=True)
         order_ids = _pharmacy_order_ids(pharmacy)
 
-        # Safe revenue calculation
         today_revenue = Order.objects.filter(
-            pharmacy=pharmacy,
+            pharmacy_id=pharmacy.id,
             payment_status='paid',
             created_at__date=today
         ).aggregate(total=Sum('total_amount'))['total'] or 0
 
         data = {
             'pending_prescriptions': Prescription.objects.filter(
-                pharmacy=pharmacy, status='pending').count(),
+                pharmacy_id=pharmacy.id, status='pending').count(),
             'low_stock_alerts': drugs.filter(
                 quantity_in_stock__lte=F('reorder_level')).count(),
             'critical_stock_alerts': drugs.filter(
                 quantity_in_stock__lte=F('critical_level')).count(),
             'ready_for_pickup': Order.objects.filter(
-                pharmacy=pharmacy, status='ready').count(),
+                pharmacy_id=pharmacy.id, status='ready').count(),
             'active_deliveries': Delivery.objects.filter(
-                order_id__in=order_ids,   # Note: confirm this is correct FK in your Delivery model
+                order_id__in=order_ids,
                 status__in=['assigned', 'picked_up', 'out_for_delivery']
             ).count(),
             'today_revenue': float(today_revenue),
             'expiring_count': StockBatch.objects.filter(
-                drug__in=drugs,
+                drug_id__in=drugs.values_list('id', flat=True),
                 expiry_date__lte=cutoff,
                 quantity_remaining__gt=0
             ).count(),
@@ -74,7 +72,8 @@ class DashboardView(APIView):
         return resp.success(data)
 
 
-# Other report views - made consistent and safer
+# ==================== Other Reporting Endpoints ====================
+
 class SalesReportView(APIView):
     permission_classes = [IsPharmacist]
 
@@ -88,7 +87,7 @@ class SalesReportView(APIView):
         to_date = request.query_params.get('to', str(timezone.now().date()))
 
         orders = Order.objects.filter(
-            pharmacy=pharmacy,
+            pharmacy_id=pharmacy.id,
             payment_status='paid',
             created_at__date__gte=from_date,
             created_at__date__lte=to_date
@@ -138,7 +137,7 @@ class PrescriptionReportView(APIView):
         to_date = request.query_params.get('to', str(timezone.now().date()))
 
         rxs = Prescription.objects.filter(
-            pharmacy=pharmacy,
+            pharmacy_id=pharmacy.id,
             created_at__date__gte=from_date,
             created_at__date__lte=to_date
         )
@@ -167,7 +166,7 @@ class StockReportView(APIView):
                 'out_of_stock': 0,
             })
 
-        drugs = Drug.objects.filter(pharmacy=pharmacy, is_active=True)
+        drugs = Drug.objects.filter(pharmacy_id=pharmacy.id, is_active=True)
         return resp.success({
             'total_skus': drugs.count(),
             'total_stock_value': float(
