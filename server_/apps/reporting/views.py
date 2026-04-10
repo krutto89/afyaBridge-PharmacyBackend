@@ -18,13 +18,15 @@ def _pharmacy_order_ids(pharmacy):
 
 
 class DashboardView(APIView):
-    permission_classes = []   # Temporary — change to IsAuthenticated later
+    permission_classes = [IsPharmacist]
 
     def get(self, request):
-        if not request.user.is_authenticated:
-            return resp.error("Authentication required")
+        # Safe access - many custom IsPharmacist classes assume .pharmacy exists
+        try:
+            pharmacy = getattr(request.user, 'pharmacy', None)
+        except Exception:
+            pharmacy = None
 
-        pharmacy = getattr(request.user, 'pharmacy', None)
         if not pharmacy:
             return resp.success({
                 'pending_prescriptions': 0,
@@ -42,6 +44,7 @@ class DashboardView(APIView):
         drugs = Drug.objects.filter(pharmacy=pharmacy, is_active=True)
         order_ids = _pharmacy_order_ids(pharmacy)
 
+        # Safe revenue calculation
         today_revenue = Order.objects.filter(
             pharmacy=pharmacy,
             payment_status='paid',
@@ -58,7 +61,7 @@ class DashboardView(APIView):
             'ready_for_pickup': Order.objects.filter(
                 pharmacy=pharmacy, status='ready').count(),
             'active_deliveries': Delivery.objects.filter(
-                order_id__in=order_ids,
+                order_id__in=order_ids,   # Note: confirm this is correct FK in your Delivery model
                 status__in=['assigned', 'picked_up', 'out_for_delivery']
             ).count(),
             'today_revenue': float(today_revenue),
@@ -69,11 +72,15 @@ class DashboardView(APIView):
             ).count(),
         }
         return resp.success(data)
+
+
+# Other report views - made consistent and safer
 class SalesReportView(APIView):
     permission_classes = [IsPharmacist]
 
     def get(self, request):
-        if not request.user.is_authenticated or not getattr(request.user, 'pharmacy', None):
+        pharmacy = getattr(request.user, 'pharmacy', None)
+        if not pharmacy:
             return resp.success({'from': None, 'to': None, 'total': 0, 'count': 0})
 
         from_date = request.query_params.get(
@@ -81,7 +88,7 @@ class SalesReportView(APIView):
         to_date = request.query_params.get('to', str(timezone.now().date()))
 
         orders = Order.objects.filter(
-            pharmacy=request.user.pharmacy,
+            pharmacy=pharmacy,
             payment_status='paid',
             created_at__date__gte=from_date,
             created_at__date__lte=to_date
@@ -98,10 +105,11 @@ class DeliveryReportView(APIView):
     permission_classes = [IsPharmacist]
 
     def get(self, request):
-        if not request.user.is_authenticated or not getattr(request.user, 'pharmacy', None):
+        pharmacy = getattr(request.user, 'pharmacy', None)
+        if not pharmacy:
             return resp.success({'total_deliveries': 0, 'delivered': 0, 'success_rate_pct': 0})
 
-        order_ids = _pharmacy_order_ids(request.user.pharmacy)
+        order_ids = _pharmacy_order_ids(pharmacy)
         deliveries = Delivery.objects.filter(order_id__in=order_ids)
         total = deliveries.count()
         delivered = deliveries.filter(status='delivered').count()
@@ -118,7 +126,8 @@ class PrescriptionReportView(APIView):
     permission_classes = [IsPharmacist]
 
     def get(self, request):
-        if not request.user.is_authenticated or not getattr(request.user, 'pharmacy', None):
+        pharmacy = getattr(request.user, 'pharmacy', None)
+        if not pharmacy:
             return resp.success({
                 'from': None, 'to': None, 'total': 0, 'pending': 0,
                 'validated': 0, 'dispensed': 0, 'rejected': 0
@@ -129,7 +138,7 @@ class PrescriptionReportView(APIView):
         to_date = request.query_params.get('to', str(timezone.now().date()))
 
         rxs = Prescription.objects.filter(
-            pharmacy=request.user.pharmacy,
+            pharmacy=pharmacy,
             created_at__date__gte=from_date,
             created_at__date__lte=to_date
         )
@@ -148,7 +157,8 @@ class StockReportView(APIView):
     permission_classes = [IsPharmacist]
 
     def get(self, request):
-        if not request.user.is_authenticated or not getattr(request.user, 'pharmacy', None):
+        pharmacy = getattr(request.user, 'pharmacy', None)
+        if not pharmacy:
             return resp.success({
                 'total_skus': 0,
                 'total_stock_value': 0.0,
@@ -157,9 +167,7 @@ class StockReportView(APIView):
                 'out_of_stock': 0,
             })
 
-        drugs = Drug.objects.filter(
-            pharmacy=request.user.pharmacy, is_active=True
-        )
+        drugs = Drug.objects.filter(pharmacy=pharmacy, is_active=True)
         return resp.success({
             'total_skus': drugs.count(),
             'total_stock_value': float(
